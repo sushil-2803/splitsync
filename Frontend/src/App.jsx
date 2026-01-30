@@ -219,19 +219,24 @@ function ExpenseDialog({ mode, expense, members = [], users = [], user, groupId,
 }
 
 function PaymentDialog({ members = [], users = [], user, groupId, suggestedPayment, onClose, onSave }) {
+  const groupMembers = members
+    .map(member => ({ ...member, user: users.find(item => item.id === member.userId) }))
+    .filter(member => member.user);
+  const defaultPayerId = suggestedPayment?.fromUserId || user.id;
   const defaultRecipientId = suggestedPayment?.toUserId || members.find(member => member.userId !== user.id)?.userId || '';
+  const [fromUserId, setFromUserId] = useState(defaultPayerId);
   const [toUserId, setToUserId] = useState(defaultRecipientId);
   const [amount, setAmount] = useState(suggestedPayment?.amount?.toString() || '');
   const [date, setDate] = useState(toDateInputValue(new Date()));
   const numericAmount = roundMoney(amount);
-  const canSubmit = toUserId && numericAmount > 0;
+  const canSubmit = fromUserId && toUserId && fromUserId !== toUserId && numericAmount > 0;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
     await onSave({
       id: crypto.randomUUID(),
       groupId,
-      fromUserId: user.id,
+      fromUserId,
       toUserId,
       amount: numericAmount,
       date: new Date(`${date}T00:00:00`).toISOString(),
@@ -250,15 +255,26 @@ function PaymentDialog({ members = [], users = [], user, groupId, suggestedPayme
         <h3 className="text-2xl font-black text-white mb-8 tracking-tighter">Record Payment</h3>
 
         <div className="space-y-5">
-          <div>
-            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 block mb-2">Pay To</label>
-            <select value={toUserId} onChange={e => setToUserId(e.target.value)} className="w-full bg-[#252528] p-4 rounded-2xl border border-white/5 text-white focus:ring-2 focus:ring-emerald-500/50 focus:outline-none transition-all">
-              <option value="" disabled>Select member</option>
-              {members.filter(member => member.userId !== user.id).map(member => {
-                const memberUser = users.find(item => item.id === member.userId);
-                return <option key={member.userId} value={member.userId}>{memberUser?.name || memberUser?.email || 'Member'}</option>;
-              })}
-            </select>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 block mb-2">From</label>
+              <select value={fromUserId} onChange={e => setFromUserId(e.target.value)} className="w-full bg-[#252528] p-4 rounded-2xl border border-white/5 text-white focus:ring-2 focus:ring-emerald-500/50 focus:outline-none transition-all">
+                <option value="" disabled>Select payer</option>
+                {groupMembers.map(member => (
+                  <option key={member.userId} value={member.userId}>{member.user.name || member.user.email || 'Member'}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 block mb-2">To</label>
+              <select value={toUserId} onChange={e => setToUserId(e.target.value)} className="w-full bg-[#252528] p-4 rounded-2xl border border-white/5 text-white focus:ring-2 focus:ring-emerald-500/50 focus:outline-none transition-all">
+                <option value="" disabled>Select receiver</option>
+                {groupMembers.map(member => (
+                  <option key={member.userId} value={member.userId}>{member.user.name || member.user.email || 'Member'}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div>
@@ -619,6 +635,16 @@ function GroupDetail({ groupId, onBack, user }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+        <div className="lg:hidden">
+          <button 
+            onClick={() => setExpenseDialog({ mode: 'create' })}
+            className="w-full py-4 bg-indigo-600 text-white rounded-3xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-500 shadow-2xl shadow-indigo-900/40 transition-all border border-indigo-400/20 active:scale-95"
+          >
+            <Plus className="w-6 h-6" />
+            <span>Add Expense</span>
+          </button>
+        </div>
+
         {/* Stats Column */}
         <div className="lg:col-span-3 space-y-8">
           <section className="grid grid-cols-1 sm:grid-cols-3 gap-6">
@@ -841,7 +867,7 @@ function GroupDetail({ groupId, onBack, user }) {
         <div className="lg:col-span-1 space-y-6">
            <button 
              onClick={() => setExpenseDialog({ mode: 'create' })}
-             className="w-full py-4 bg-indigo-600 text-white rounded-3xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-500 shadow-2xl shadow-indigo-900/40 transition-all border border-indigo-400/20 active:scale-95"
+             className="hidden lg:flex w-full py-4 bg-indigo-600 text-white rounded-3xl font-bold items-center justify-center gap-2 hover:bg-indigo-500 shadow-2xl shadow-indigo-900/40 transition-all border border-indigo-400/20 active:scale-95"
            >
              <Plus className="w-6 h-6" />
              <span>Add Expense</span>
