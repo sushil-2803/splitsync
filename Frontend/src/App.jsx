@@ -926,25 +926,72 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
+    // const checkAuth = async () => {
+    //   try {
+    //     const res = await fetch(apiUrl('/api/me'), { credentials: 'include' });
+    //     if (res.ok) {
+    //       const data = await res.json();
+    //       setUser(data);
+    //       // Trigger sync in background
+    //       syncData();
+    //     } else {
+    //       setUser(null);
+    //     }
+    //   } catch (err) {
+    //     console.error('Auth check failed:', err);
+    //     setUser(null);
+    //   } finally {
+    //     setLoading(false);
+    //   }
+    // };
     const checkAuth = async () => {
-      try {
-        const res = await fetch(apiUrl('/api/me'), { credentials: 'include' });
-        if (res.ok) {
-          const data = await res.json();
-          setUser(data);
-          // Trigger sync in background
-          syncData();
-        } else {
-          setUser(null);
-        }
-      } catch (err) {
-        console.error('Auth check failed:', err);
+  try {
+    // OFFLINE PATH
+    if (!navigator.onLine) {
+      const cachedUser = await db.users.toCollection().first();
+
+      if (cachedUser) {
+        console.log('Offline mode');
+        setUser(cachedUser);
+      } else {
         setUser(null);
-      } finally {
-        setLoading(false);
       }
-    };
-    
+
+      return;
+    }
+
+    // ONLINE PATH
+    const res = await fetch(apiUrl('/api/me'), {
+      credentials: 'include'
+    });
+
+    if (!res.ok) {
+      setUser(null);
+      return;
+    }
+
+    const userData = await res.json();
+
+    setUser(userData);
+
+    await db.users.put(userData);
+
+    syncData();
+
+  } catch (err) {
+    console.error(err);
+
+    const cachedUser = await db.users.toCollection().first();
+
+    if (cachedUser) {
+      setUser(cachedUser);
+    } else {
+      setUser(null);
+    }
+  } finally {
+    setLoading(false);
+  }
+};
     checkAuth();
 
     return () => {
