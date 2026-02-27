@@ -156,6 +156,17 @@ export const prisma = {
         }));
       }
 
+      if (where?.groupId) {
+        const rows = await query('SELECT * FROM group_members WHERE group_id = $1', [where.groupId]);
+        return rows.map(row => ({
+          id: row.id,
+          userId: row.user_id,
+          groupId: row.group_id,
+          role: row.role,
+          joined: row.joined,
+        }));
+      }
+
       return [];
     },
     create: async ({ data }) => {
