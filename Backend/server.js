@@ -290,12 +290,28 @@ async function startServer() {
 
   // Payments (Settle Up)
   app.post('/api/payments', authRequired, asyncHandler(async (req, res) => {
-    const { id, groupId, toUserId, amount, date } = req.body;
+    const { id, groupId, fromUserId, toUserId, amount, date } = req.body;
+    if (!groupId || !fromUserId || !toUserId || !amount) {
+      return res.status(400).json({ error: 'groupId, fromUserId, toUserId, and amount are required' });
+    }
+    if (fromUserId === toUserId) {
+      return res.status(400).json({ error: 'Payer and receiver must be different members' });
+    }
+
+    const groupMembers = await prisma.groupMember.findMany({ where: { groupId } });
+    const memberIds = new Set(groupMembers.map(member => member.userId));
+    if (!memberIds.has(req.user.id)) {
+      return res.status(403).json({ error: 'Not a group member' });
+    }
+    if (!memberIds.has(fromUserId) || !memberIds.has(toUserId)) {
+      return res.status(400).json({ error: 'Payment users must be group members' });
+    }
+
     const payment = await prisma.payment.create({
       data: {
         id,
         groupId,
-        fromUserId: req.user.id,
+        fromUserId,
         toUserId,
         amount,
         date: date ? new Date(date) : new Date(),
