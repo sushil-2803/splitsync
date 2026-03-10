@@ -1,0 +1,24 @@
+{
+  "name": "split-sync-root",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "Frontend",
+    "Backend"
+  ],
+  "scripts": {
+    "backend:dev": "npm --prefix Backend run dev",
+    "backend:build": "npm --prefix Backend run build",
+    "backend:start": "npm --prefix Backend run start",
+    "frontend:dev": "npm --prefix Frontend run dev",
+    "frontend:build": "npm --prefix Frontend run build",
+    "frontend:preview": "npm --prefix Frontend run preview"
+  },
+  "devDependencies": {},
+  "description": "Independent backend and frontend workspaces for SplitSync.",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
