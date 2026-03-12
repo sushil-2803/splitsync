@@ -335,6 +335,11 @@ async function startServer() {
     });
   }));
 
+  //
+  app.get('/', (req, res) => {
+    res.send('Splitsync Backend API');
+  });
+
   // Global Unhandled Error Handler
   app.use((err, req, res, next) => {
     console.error('UNHANDLED SERVER ROUTE ERROR:', err);
