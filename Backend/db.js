@@ -369,14 +369,16 @@ export const prisma = {
     update: async ({ where, data, include }) => transaction(async client => {
       const rows = await client.query(`
         UPDATE expenses
-        SET amount = $1,
-            description = $2,
-            comments = $3,
-            date = $4,
-            split_type = $5
-        WHERE id = $6
+        SET paid_by_id = $1,
+            amount = $2,
+            description = $3,
+            comments = $4,
+            date = $5,
+            split_type = $6
+        WHERE id = $7
         RETURNING *
       `, [
+        data.paidById,
         data.amount,
         data.description,
         data.comments || null,
