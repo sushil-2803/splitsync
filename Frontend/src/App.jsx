@@ -54,6 +54,7 @@ function ExpenseDialog({ mode, expense, members = [], users = [], user, groupId,
   const [amount, setAmount] = useState(expense?.amount?.toString() || '');
   const [date, setDate] = useState(toDateInputValue(expense?.date));
   const [comments, setComments] = useState(expense?.comments || '');
+  const [paidById, setPaidById] = useState(expense?.paidById || user.id);
   const [splitType, setSplitType] = useState(expense?.splitType || 'EQUAL');
   const [splitAmounts, setSplitAmounts] = useState(() => {
     const fromExpense = Object.fromEntries((expense?.splits || []).map(split => [split.userId, split.amount?.toString() || '']));
@@ -69,7 +70,7 @@ function ExpenseDialog({ mode, expense, members = [], users = [], user, groupId,
   const numericAmount = roundMoney(amount);
   const unequalTotal = selectedUserIds.reduce((sum, userId) => sum + roundMoney(splitAmounts[userId]), 0);
   const equalShare = selectedUserIds.length > 0 ? roundMoney(numericAmount / selectedUserIds.length) : 0;
-  const canSubmit = description.trim() && numericAmount > 0 && selectedUserIds.length > 0 && (splitType === 'EQUAL' || Math.abs(unequalTotal - numericAmount) < 0.01);
+  const canSubmit = description.trim() && paidById && numericAmount > 0 && selectedUserIds.length > 0 && (splitType === 'EQUAL' || Math.abs(unequalTotal - numericAmount) < 0.01);
 
   const toggleMember = userId => {
     setSelectedMembers(current => {
@@ -98,7 +99,7 @@ function ExpenseDialog({ mode, expense, members = [], users = [], user, groupId,
     await onSave({
       id: expense?.id || crypto.randomUUID(),
       groupId,
-      paidById: expense?.paidById || user.id,
+      paidById,
       description: description.trim(),
       comments: comments.trim(),
       amount: numericAmount,
@@ -152,6 +153,19 @@ function ExpenseDialog({ mode, expense, members = [], users = [], user, groupId,
                 <Calendar className="w-5 h-5 absolute left-4 top-4 text-slate-600" />
                 <input value={date} onChange={e => setDate(e.target.value)} disabled={isView} type="date" className="w-full bg-[#252528] p-4 rounded-2xl border border-white/5 text-white pl-11 focus:ring-2 focus:ring-indigo-500/50 focus:outline-none transition-all disabled:opacity-70" />
               </div>
+            </div>
+            <div className="sm:col-span-2">
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 block mb-2">Paid By</label>
+              <select value={paidById} onChange={e => setPaidById(e.target.value)} disabled={isView} className="w-full bg-[#252528] p-4 rounded-2xl border border-white/5 text-white focus:ring-2 focus:ring-indigo-500/50 focus:outline-none transition-all disabled:opacity-70">
+                {members.map(member => {
+                  const memberUser = users.find(item => item.id === member.userId);
+                  return (
+                    <option key={member.userId} value={member.userId}>
+                      {member.userId === user.id ? 'You' : memberUser?.name || memberUser?.email || 'Member'}
+                    </option>
+                  );
+                })}
+              </select>
             </div>
           </div>
 
