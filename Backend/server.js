@@ -221,14 +221,35 @@ async function startServer() {
     return isMember ? expense : false;
   };
 
+  const assertGroupExpenseUsers = async (groupId, creatorId, paidById, splits = []) => {
+    const groupMembers = await prisma.groupMember.findMany({ where: { groupId } });
+    const memberIds = new Set(groupMembers.map(member => member.userId));
+    if (!memberIds.has(creatorId)) {
+      return { status: 403, error: 'Not a group member' };
+    }
+    if (!memberIds.has(paidById)) {
+      return { status: 400, error: 'Paid by must be a group member' };
+    }
+    const invalidSplit = splits.find(split => !memberIds.has(split.userId));
+    if (invalidSplit) {
+      return { status: 400, error: 'Expense splits must use group members' };
+    }
+    return null;
+  };
+
   app.post('/api/expenses', authRequired, asyncHandler(async (req, res) => {
-    const { id, groupId, amount, description, comments, date, splitType, splits } = req.body;
+    const { id, groupId, paidById, amount, description, comments, date, splitType, splits } = req.body;
+    const selectedPaidById = paidById || req.user.id;
+    const validationError = await assertGroupExpenseUsers(groupId, req.user.id, selectedPaidById, splits || []);
+    if (validationError) {
+      return res.status(validationError.status).json({ error: validationError.error });
+    }
     
     const expense = await prisma.expense.create({
       data: {
         id,
         groupId,
-        paidById: req.user.id,
+        paidById: selectedPaidById,
         amount,
         description,
         comments,
@@ -258,10 +279,17 @@ async function startServer() {
     if (existing === null) return res.status(404).json({ error: 'Expense not found' });
     if (existing === false) return res.status(403).json({ error: 'Not a group member' });
 
-    const { amount, description, comments, date, splitType, splits } = req.body;
+    const { paidById, amount, description, comments, date, splitType, splits } = req.body;
+    const selectedPaidById = paidById || existing.paidById;
+    const validationError = await assertGroupExpenseUsers(existing.groupId, req.user.id, selectedPaidById, splits || []);
+    if (validationError) {
+      return res.status(validationError.status).json({ error: validationError.error });
+    }
+
     const expense = await prisma.expense.update({
       where: { id: req.params.id },
       data: {
+        paidById: selectedPaidById,
         amount,
         description,
         comments,
