@@ -36,6 +36,7 @@ import { format } from 'date-fns';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 const apiUrl = path => `${API_BASE_URL}${path}`;
+const LAST_AUTHED_USER_ID_KEY = 'splitSync:lastAuthedUserId';
 
 // --- Components ---
 
@@ -45,6 +46,21 @@ const toDateInputValue = value => {
 };
 
 const roundMoney = value => Math.round((Number(value) || 0) * 100) / 100;
+
+const clearLocalAccountData = async () => {
+  await db.transaction('rw', [db.groups, db.expenses, db.payments, db.members, db.users], async () => {
+    await db.groups.clear();
+    await db.expenses.clear();
+    await db.payments.clear();
+    await db.members.clear();
+    await db.users.clear();
+  });
+};
+
+const getLastVerifiedCachedUser = async () => {
+  const lastUserId = localStorage.getItem(LAST_AUTHED_USER_ID_KEY);
+  return lastUserId ? db.users.get(lastUserId) : null;
+};
 
 function ExpenseDialog({ mode, expense, members = [], users = [], user, groupId, onClose, onSave, onDelete }) {
   const isView = mode === 'view';
@@ -966,72 +982,39 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // const checkAuth = async () => {
-    //   try {
-    //     const res = await fetch(apiUrl('/api/me'), { credentials: 'include' });
-    //     if (res.ok) {
-    //       const data = await res.json();
-    //       setUser(data);
-    //       // Trigger sync in background
-    //       syncData();
-    //     } else {
-    //       setUser(null);
-    //     }
-    //   } catch (err) {
-    //     console.error('Auth check failed:', err);
-    //     setUser(null);
-    //   } finally {
-    //     setLoading(false);
-    //   }
-    // };
     const checkAuth = async () => {
-  try {
-    // OFFLINE PATH
-    if (!navigator.onLine) {
-      const cachedUser = await db.users.toCollection().first();
+      try {
+        if (!navigator.onLine) {
+          const cachedUser = await getLastVerifiedCachedUser();
+          setUser(cachedUser || null);
+          return;
+        }
 
-      if (cachedUser) {
-        console.log('Offline mode');
-        setUser(cachedUser);
-      } else {
-        setUser(null);
+        const res = await fetch(apiUrl('/api/me'), {
+          credentials: 'include'
+        });
+
+        if (!res.ok) {
+          setUser(null);
+          localStorage.removeItem(LAST_AUTHED_USER_ID_KEY);
+          await clearLocalAccountData();
+          return;
+        }
+
+        const userData = await res.json();
+        localStorage.setItem(LAST_AUTHED_USER_ID_KEY, userData.id);
+        setUser(userData);
+        await db.users.put(userData);
+        syncData();
+
+      } catch (err) {
+        console.error(err);
+        const cachedUser = await getLastVerifiedCachedUser();
+        setUser(cachedUser || null);
+      } finally {
+        setLoading(false);
       }
-
-      return;
-    }
-
-    // ONLINE PATH
-    const res = await fetch(apiUrl('/api/me'), {
-      credentials: 'include'
-    });
-
-    if (!res.ok) {
-      setUser(null);
-      return;
-    }
-
-    const userData = await res.json();
-
-    setUser(userData);
-
-    await db.users.put(userData);
-
-    syncData();
-
-  } catch (err) {
-    console.error(err);
-
-    const cachedUser = await db.users.toCollection().first();
-
-    if (cachedUser) {
-      setUser(cachedUser);
-    } else {
-      setUser(null);
-    }
-  } finally {
-    setLoading(false);
-  }
-};
+    };
     checkAuth();
 
     return () => {
@@ -1050,6 +1033,14 @@ export default function App() {
   const syncData = async () => {
     try {
       const res = await fetch(apiUrl('/api/sync'), { credentials: 'include' });
+      if (!res.ok) {
+        if (res.status === 401) {
+          setUser(null);
+          localStorage.removeItem(LAST_AUTHED_USER_ID_KEY);
+          await clearLocalAccountData();
+        }
+        return;
+      }
       const data = await res.json();
       if (data.groups) {
         // Update Lexie
@@ -1059,6 +1050,9 @@ export default function App() {
           
           await db.members.clear();
           await db.users.clear();
+          if (data.user) {
+            await db.users.put(data.user);
+          }
           for (const g of data.groups) {
             if (g.members) {
               await db.members.bulkAdd(g.members.map(m => ({
@@ -1117,7 +1111,13 @@ export default function App() {
     });
     const data = await res.json();
     if (!data.error) {
+      const previousUserId = localStorage.getItem(LAST_AUTHED_USER_ID_KEY);
+      if (previousUserId && previousUserId !== data.id) {
+        await clearLocalAccountData();
+      }
+      localStorage.setItem(LAST_AUTHED_USER_ID_KEY, data.id);
       setUser(data);
+      await db.users.put(data);
       syncData();
     }
   };
@@ -1125,6 +1125,7 @@ export default function App() {
   const handleLogout = async () => {
     await fetch(apiUrl('/api/auth/logout'), { method: 'POST', credentials: 'include' });
     setUser(null);
+    localStorage.removeItem(LAST_AUTHED_USER_ID_KEY);
     await db.delete(); // Clear local cache on logout
     window.location.reload();
   };
