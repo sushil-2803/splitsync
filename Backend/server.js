@@ -3,11 +3,65 @@ import cookieParser from 'cookie-parser';
 import { OAuth2Client } from 'google-auth-library';
 import { initDatabase, prisma } from './db.js';
 import cors from 'cors';
+import crypto from 'crypto';
 
 const googleClient = new OAuth2Client();
 const PORT = Number(process.env.PORT || 3000);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
+const SESSION_COOKIE = 'splitSyncSession';
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_SECRET = process.env.SESSION_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'dev-only-session-secret');
+const cookieOptions = {
+  httpOnly: true,
+  secure: COOKIE_SECURE,
+  sameSite: 'lax',
+  maxAge: SESSION_MAX_AGE_MS,
+};
+
+const sign = value =>
+  crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
+
+const encodeSession = userId => {
+  const payload = Buffer.from(JSON.stringify({
+    userId,
+    exp: Date.now() + SESSION_MAX_AGE_MS,
+  })).toString('base64url');
+  return `${payload}.${sign(payload)}`;
+};
+
+const decodeSession = session => {
+  if (!SESSION_SECRET || !session || typeof session !== 'string') return null;
+
+  const [payload, signature] = session.split('.');
+  if (!payload || !signature) return null;
+
+  const expectedSignature = sign(payload);
+  const signatureBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) {
+    return null;
+  }
+
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!data.userId || !data.exp || data.exp < Date.now()) return null;
+    return data.userId;
+  } catch {
+    return null;
+  }
+};
+
+const getSessionUser = async req => {
+  const userId = decodeSession(req.cookies[SESSION_COOKIE]);
+  if (!userId) return null;
+  return prisma.user.findUnique({ where: { id: userId } });
+};
+
+const clearAuthCookies = res => {
+  res.clearCookie(SESSION_COOKIE, cookieOptions);
+  res.clearCookie('userId');
+};
 
 async function startServer() {
   const app = express();
@@ -20,6 +74,10 @@ async function startServer() {
 
   if (!process.env.DATABASE_URL) {
     console.warn('WARNING: DATABASE_URL is missing. PostgreSQL connection will fail.');
+  }
+
+  if (!SESSION_SECRET) {
+    throw new Error('SESSION_SECRET is required in production');
   }
 
   await initDatabase();
@@ -38,13 +96,10 @@ async function startServer() {
   // Auth Middleware
   const authRequired = async (req, res, next) => {
     try {
-      const userId = req.cookies.userId;
-      if (!userId) {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-      const user = await prisma.user.findUnique({ where: { id: userId } });
+      const user = await getSessionUser(req);
       if (!user) {
-        return res.status(401).json({ error: 'User not found' });
+        clearAuthCookies(res);
+        return res.status(401).json({ error: 'Unauthorized' });
       }
       req.user = user;
       next();
@@ -89,12 +144,8 @@ async function startServer() {
         });
       }
 
-      res.cookie('userId', user.id, {
-        httpOnly: true,
-        secure: COOKIE_SECURE,
-        sameSite: 'lax',
-        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      });
+      res.cookie(SESSION_COOKIE, encodeSession(user.id), cookieOptions);
+      res.clearCookie('userId');
 
       res.json(user);
     } catch (error) {
@@ -104,17 +155,17 @@ async function startServer() {
   }));
 
   app.get('/api/me', asyncHandler(async (req, res) => {
-    const userId = req.cookies.userId;
-    if (!userId) return res.status(401).json({ error: 'Not logged in' });
-    
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) return res.status(401).json({ error: 'User not found' });
+    const user = await getSessionUser(req);
+    if (!user) {
+      clearAuthCookies(res);
+      return res.status(401).json({ error: 'Not logged in' });
+    }
     
     res.json(user);
   }));
 
   app.post('/api/auth/logout', (req, res) => {
-    res.clearCookie('userId');
+    clearAuthCookies(res);
     res.json({ success: true });
   });
 
