@@ -14,6 +14,13 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss(), VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico'],
+      workbox: {
+        navigateFallbackDenylist: [/^\/api(?:\/|$)/],
+        runtimeCaching: [{
+          urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
+          handler: 'NetworkOnly',
+        }],
+      },
       manifest: {
         name: 'SplitSync',
         short_name: 'SplitSync',

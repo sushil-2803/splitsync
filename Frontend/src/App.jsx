@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Users, 
@@ -29,14 +29,13 @@ import {
   Pencil,
   Trash2
 } from 'lucide-react';
-import { db, addToSyncQueue } from './db';
+import { AccountSession } from './session.js';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { cn, formatCurrency } from './lib/utils';
 import { format } from 'date-fns';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 const apiUrl = path => `${API_BASE_URL}${path}`;
-const LAST_AUTHED_USER_ID_KEY = 'splitSync:lastAuthedUserId';
 
 // --- Components ---
 
@@ -46,21 +45,6 @@ const toDateInputValue = value => {
 };
 
 const roundMoney = value => Math.round((Number(value) || 0) * 100) / 100;
-
-const clearLocalAccountData = async () => {
-  await db.transaction('rw', [db.groups, db.expenses, db.payments, db.members, db.users], async () => {
-    await db.groups.clear();
-    await db.expenses.clear();
-    await db.payments.clear();
-    await db.members.clear();
-    await db.users.clear();
-  });
-};
-
-const getLastVerifiedCachedUser = async () => {
-  const lastUserId = localStorage.getItem(LAST_AUTHED_USER_ID_KEY);
-  return lastUserId ? db.users.get(lastUserId) : null;
-};
 
 function ExpenseDialog({ mode, expense, members = [], users = [], user, groupId, onClose, onSave, onDelete }) {
   const isView = mode === 'view';
@@ -333,7 +317,7 @@ function PaymentDialog({ members = [], users = [], user, groupId, suggestedPayme
   );
 }
 
-function Navbar({ user, onLogout, isOnline, syncPending }) {
+function Navbar({ user, onLogout, isOnline, verified, syncPending }) {
   return (
     <nav className="sticky top-0 z-50 bg-brand-bg/80 backdrop-blur-md border-b border-white/5">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -352,7 +336,7 @@ function Navbar({ user, onLogout, isOnline, syncPending }) {
               {isOnline ? (
                 <div className="flex items-center gap-1 text-emerald-400">
                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
-                  <span className="hidden sm:inline">Synced</span>
+                  <span className="hidden sm:inline">{verified ? (syncPending ? 'Sync pending' : 'Online') : 'Reconnecting'}</span>
                 </div>
               ) : (
                 <div className="flex items-center gap-1 text-orange-400">
@@ -377,7 +361,7 @@ function Navbar({ user, onLogout, isOnline, syncPending }) {
                 <button 
                   onClick={onLogout}
                   className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-colors"
-                  title="Logout"
+                  title="Sign out and remove saved data and pending changes from this device"
                 >
                   <LogOut className="w-5 h-5" />
                 </button>
@@ -390,20 +374,39 @@ function Navbar({ user, onLogout, isOnline, syncPending }) {
   );
 }
 
-function GoogleLogin({ onLogin }) {
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    document.body.appendChild(script);
+function GoogleLogin({ onLogin, notice, migrationNotice }) {
+  const onLoginRef = useRef(onLogin);
+  const [authError, setAuthError] = useState('');
+  const [isSigningIn, setIsSigningIn] = useState(false);
 
+  onLoginRef.current = onLogin;
+
+  useEffect(() => {
     window.handleCredentialResponse = async (response) => {
-      onLogin(response.credential);
+      setAuthError('');
+      setIsSigningIn(true);
+      try {
+        await onLoginRef.current(response.credential);
+      } catch (error) {
+        setAuthError(error.message || 'Google sign-in failed. Please try again.');
+      } finally {
+        setIsSigningIn(false);
+      }
     };
 
-    script.onload = () => {};
-  }, [onLogin]);
+    if (!document.querySelector('script[src="https://accounts.google.com/gsi/client"]')) {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onerror = () => setAuthError('Unable to load Google sign-in. Check your network or content-security policy.');
+      document.body.appendChild(script);
+    }
+
+    return () => {
+      delete window.handleCredentialResponse;
+    };
+  }, []);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-brand-bg px-4">
@@ -426,6 +429,10 @@ function GoogleLogin({ onLogin }) {
             data-callback="handleCredentialResponse"
             data-auto_prompt="false"
           ></div>
+          {isSigningIn && <p className="text-xs text-slate-400">Signing you in…</p>}
+          {notice && <p role="status" className="text-xs text-slate-300 max-w-xs">{notice}</p>}
+          {migrationNotice && <p role="status" className="text-xs text-orange-300 max-w-xs">{migrationNotice}</p>}
+          {authError && <p role="alert" className="text-xs text-red-400 max-w-xs">{authError}</p>}
           <div 
             className="g_id_signin"
             data-type="standard"
@@ -449,12 +456,16 @@ function GroupList({ groups, onCreateGroup, onSelectGroup, onAcceptInvite }) {
   const [isAdding, setIsAdding] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (newGroupName.trim()) {
-      onCreateGroup(newGroupName);
-      setNewGroupName('');
-      setIsAdding(false);
+      try {
+        await onCreateGroup(newGroupName.trim());
+        setNewGroupName('');
+        setIsAdding(false);
+      } catch (error) {
+        alert(error.message || 'Could not save this group');
+      }
     }
   };
 
@@ -502,6 +513,7 @@ function GroupList({ groups, onCreateGroup, onSelectGroup, onAcceptInvite }) {
           ))}
         </div>
       )}
+      {groups?.some(group => !group.joined) && <p className="text-xs text-slate-400 mb-6">Accept an invitation to view the group’s members and expenses.</p>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {groups?.filter(g => g.joined).map((group) => (
@@ -576,18 +588,22 @@ function GroupList({ groups, onCreateGroup, onSelectGroup, onAcceptInvite }) {
   );
 }
 
-function GroupDetail({ groupId, onBack, user }) {
+function GroupDetail({ groupId, onBack, user, db, session }) {
   const [activeTab, setActiveTab] = useState('summary');
   const [expenseDialog, setExpenseDialog] = useState(null);
   const [isSettleUp, setIsSettleUp] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteError, setInviteError] = useState('');
+  const [isInviting, setIsInviting] = useState(false);
 
-  const group = useLiveQuery(() => db.groups.get(groupId), [groupId]);
-  const expenses = useLiveQuery(() => db.expenses.where('groupId').equals(groupId).sortBy('date'), [groupId]);
-  const payments = useLiveQuery(() => db.payments.where('groupId').equals(groupId).sortBy('date'), [groupId]);
-  const members = useLiveQuery(() => db.members.where('groupId').equals(groupId).toArray(), [groupId]);
-  const users = useLiveQuery(() => db.users.toArray());
+  const group = useLiveQuery(() => db.groups.get(groupId), [db, groupId]);
+  const expenses = useLiveQuery(() => db.expenses.where('groupId').equals(groupId).sortBy('date'), [db, groupId]);
+  const payments = useLiveQuery(() => db.payments.where('groupId').equals(groupId).sortBy('date'), [db, groupId]);
+  const members = useLiveQuery(() => db.members.where('groupId').equals(groupId).toArray(), [db, groupId]);
+  const users = useLiveQuery(() => db.users.toArray(), [db]);
+  const acceptedMembers = (members || []).filter(member => member.joined);
 
-  if (!group) return null;
+  if (!group?.joined) return null;
 
   const sortedExpenses = [...(expenses || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
   const sortedPayments = [...(payments || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -621,29 +637,33 @@ function GroupDetail({ groupId, onBack, user }) {
       return;
     }
 
-    if (expenseDialog?.mode === 'edit') {
-      await db.expenses.put(expense);
-      await addToSyncQueue('UPDATE', 'expenses', expense);
-    } else {
-      await db.expenses.add(expense);
-      await addToSyncQueue('CREATE', 'expenses', expense);
+    try {
+      await session.saveMutation(expenseDialog?.mode === 'edit' ? 'UPDATE' : 'CREATE', 'expenses', expense, user.id);
+      setExpenseDialog(null);
+    } catch (error) {
+      alert(error.message || 'Could not save this expense');
     }
-    setExpenseDialog(null);
   };
 
   const deleteExpense = async (targetExpense = expenseDialog?.expense) => {
     if (!targetExpense) return;
     const confirmed = window.confirm('Delete this expense? This removes it for everyone in the group.');
     if (!confirmed) return;
-    await db.expenses.delete(targetExpense.id);
-    await addToSyncQueue('DELETE', 'expenses', { id: targetExpense.id });
-    setExpenseDialog(null);
+    try {
+      await session.saveMutation('DELETE', 'expenses', { id: targetExpense.id, groupId }, user.id);
+      setExpenseDialog(null);
+    } catch (error) {
+      alert(error.message || 'Could not delete this expense');
+    }
   };
 
   const savePayment = async (payment) => {
-    await db.payments.add(payment);
-    await addToSyncQueue('CREATE', 'payments', payment);
-    setIsSettleUp(false);
+    try {
+      await session.saveMutation('CREATE', 'payments', payment, user.id);
+      setIsSettleUp(false);
+    } catch (error) {
+      alert(error.message || 'Could not save this payment');
+    }
   };
 
   return (
@@ -659,7 +679,7 @@ function GroupDetail({ groupId, onBack, user }) {
           <h1 className="text-3xl font-bold text-white tracking-tight leading-tight">{group.name}</h1>
           <p className="text-slate-500 font-medium flex items-center gap-2">
             <Users className="w-4 h-4" />
-            {members?.length || 0} Members • Managed by you
+            {acceptedMembers.length} Members • {group.role === 'ADMIN' ? 'Managed by you' : 'Shared group'}
           </p>
         </div>
       </div>
@@ -800,26 +820,29 @@ function GroupDetail({ groupId, onBack, user }) {
 
                   {activeTab === 'members' && (
                     <div className="space-y-8">
+                       {group.role === 'ADMIN' && (
                        <div className="bg-brand-bg/50 p-6 rounded-3xl border border-white/5 border-dashed">
                          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">Invite New Contributor</h3>
                          <div className="flex gap-3">
                            <input 
                              type="email" 
                              placeholder="friend@email.com" 
-                             id="invite-email"
+                             value={inviteEmail}
+                             onChange={event => setInviteEmail(event.target.value)}
                              className="flex-1 bg-brand-surface p-4 rounded-2xl border border-white/5 text-white placeholder-slate-600 focus:ring-2 focus:ring-indigo-500/50 focus:outline-none transition-all"
                            />
                            <button 
+                             disabled={isInviting || !inviteEmail.trim()}
                              onClick={async () => {
-                               const email = document.getElementById('invite-email').value;
-                               if (email) {
-                                 const res = await fetch(apiUrl(`/api/groups/${groupId}/invite`), {
-                                   method: 'POST',
-                                   headers: { 'Content-Type': 'application/json' },
-                                   credentials: 'include',
-                                   body: JSON.stringify({ email })
-                                 });
-                                 if (res.ok) { document.getElementById('invite-email').value = ''; }
+                               setInviteError('');
+                               setIsInviting(true);
+                               try {
+                                 await session.inviteMember(groupId, inviteEmail.trim(), user.id);
+                                 setInviteEmail('');
+                               } catch (error) {
+                                 setInviteError(error.message || 'Could not invite this member');
+                               } finally {
+                                 setIsInviting(false);
                                }
                              }}
                              className="bg-indigo-600 text-white px-6 py-2 rounded-2xl hover:bg-indigo-500 font-bold shadow-lg shadow-indigo-900/20"
@@ -827,7 +850,9 @@ function GroupDetail({ groupId, onBack, user }) {
                              Invite
                            </button>
                          </div>
+                         {inviteError && <p role="alert" className="text-xs text-rose-400 mt-3">{inviteError}</p>}
                        </div>
+                       )}
 
                        <div className="space-y-4">
                          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest px-2">Active Members</h3>
@@ -932,7 +957,7 @@ function GroupDetail({ groupId, onBack, user }) {
           <ExpenseDialog
             mode={expenseDialog.mode}
             expense={expenseDialog.expense}
-            members={members || []}
+            members={acceptedMembers}
             users={users || []}
             user={user}
             groupId={groupId}
@@ -943,7 +968,7 @@ function GroupDetail({ groupId, onBack, user }) {
         )}
         {isSettleUp && (
           <PaymentDialog
-            members={members || []}
+            members={acceptedMembers}
             users={users || []}
             user={user}
             groupId={groupId}
@@ -957,280 +982,88 @@ function GroupDetail({ groupId, onBack, user }) {
   );
 }
 
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [showSyncFallback, setShowSyncFallback] = useState(false);
+function AccountWorkspace({ session, account }) {
+  const { user, database: db, verified, isOnline, notice, migrationNotice } = account;
   const [currentGroupId, setCurrentGroupId] = useState(null);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const groups = useLiveQuery(() => db.groups.toArray(), [db]);
+  const syncPending = useLiveQuery(() => db.syncQueue.where('ownerId').equals(user.id).count(), [db, user.id]) || 0;
 
   useEffect(() => {
-    let fallbackTimer;
-    if (loading) {
-      fallbackTimer = setTimeout(() => setShowSyncFallback(true), 6000);
-    }
-    return () => clearTimeout(fallbackTimer);
-  }, [loading]);
+    if (verified && isOnline && syncPending > 0) void session.sync();
+  }, [session, verified, isOnline, syncPending]);
 
-  // Live queries
-  const groups = useLiveQuery(() => db.groups.toArray());
-  const syncPending = useLiveQuery(() => db.syncQueue.count()) || 0;
-
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    const checkAuth = async () => {
-      try {
-        if (!navigator.onLine) {
-          const cachedUser = await getLastVerifiedCachedUser();
-          setUser(cachedUser || null);
-          return;
-        }
-
-        const res = await fetch(apiUrl('/api/me'), {
-          credentials: 'include'
-        });
-
-        if (!res.ok) {
-          setUser(null);
-          localStorage.removeItem(LAST_AUTHED_USER_ID_KEY);
-          await clearLocalAccountData();
-          return;
-        }
-
-        const userData = await res.json();
-        localStorage.setItem(LAST_AUTHED_USER_ID_KEY, userData.id);
-        setUser(userData);
-        await db.users.put(userData);
-        syncData();
-
-      } catch (err) {
-        console.error(err);
-        const cachedUser = await getLastVerifiedCachedUser();
-        setUser(cachedUser || null);
-      } finally {
-        setLoading(false);
-      }
-    };
-    checkAuth();
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
-
-  // Sync logic
-  useEffect(() => {
-    if (isOnline && syncPending > 0) {
-      processSyncQueue();
-    }
-  }, [isOnline, syncPending]);
-
-  const syncData = async () => {
-    try {
-      const res = await fetch(apiUrl('/api/sync'), { credentials: 'include' });
-      if (!res.ok) {
-        if (res.status === 401) {
-          setUser(null);
-          localStorage.removeItem(LAST_AUTHED_USER_ID_KEY);
-          await clearLocalAccountData();
-        }
-        return;
-      }
-      const data = await res.json();
-      if (data.groups) {
-        // Update Lexie
-        await db.transaction('rw', [db.groups, db.expenses, db.payments, db.members, db.users], async () => {
-          await db.groups.clear();
-          await db.groups.bulkAdd(data.groups.map(({ members, expenses, payments, ...g }) => g));
-          
-          await db.members.clear();
-          await db.users.clear();
-          if (data.user) {
-            await db.users.put(data.user);
-          }
-          for (const g of data.groups) {
-            if (g.members) {
-              await db.members.bulkAdd(g.members.map(m => ({
-                id: m.id, groupId: g.id, userId: m.userId, role: m.role, joined: m.joined
-              })));
-              await db.users.bulkPut(g.members.map(m => m.user).filter(Boolean));
-            }
-          }
-
-          await db.expenses.clear();
-          for (const g of data.groups) {
-             if (g.expenses) await db.expenses.bulkAdd(g.expenses);
-          }
-
-          await db.payments.clear();
-          for (const g of data.groups) {
-             if (g.payments) await db.payments.bulkAdd(g.payments);
-          }
-        });
-      }
-    } catch (e) {
-      console.error('Sync failed', e);
-    }
-  };
-
-  const processSyncQueue = async () => {
-    const items = await db.syncQueue.toArray();
-    for (const item of items) {
-      try {
-        const endpoint = item.table === 'groups' ? '/api/groups' : (item.table === 'expenses' ? '/api/expenses' : '/api/payments');
-        const method = item.action === 'UPDATE' ? 'PUT' : item.action === 'DELETE' ? 'DELETE' : 'POST';
-        const requestUrl = item.action === 'UPDATE' || item.action === 'DELETE'
-          ? `${endpoint}/${item.data.id}`
-          : endpoint;
-        const res = await fetch(apiUrl(requestUrl), {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: item.action === 'DELETE' ? undefined : JSON.stringify(item.data),
-        });
-        if (res.ok) {
-          await db.syncQueue.delete(item.id);
-        }
-      } catch (e) {
-        break; // Stop if still offline or error
-      }
-    }
-  };
-
-  const handleLogin = async (token) => {
-    const res = await fetch(apiUrl('/api/auth/google'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ token }),
-    });
-    const data = await res.json();
-    if (!data.error) {
-      const previousUserId = localStorage.getItem(LAST_AUTHED_USER_ID_KEY);
-      if (previousUserId && previousUserId !== data.id) {
-        await clearLocalAccountData();
-      }
-      localStorage.setItem(LAST_AUTHED_USER_ID_KEY, data.id);
-      setUser(data);
-      await db.users.put(data);
-      syncData();
-    }
-  };
-
-  const handleLogout = async () => {
-    await fetch(apiUrl('/api/auth/logout'), { method: 'POST', credentials: 'include' });
-    setUser(null);
-    localStorage.removeItem(LAST_AUTHED_USER_ID_KEY);
-    await db.delete(); // Clear local cache on logout
-    window.location.reload();
-  };
-
-  const handleCreateGroup = async (name) => {
-    const newGroup = {
-      id: crypto.randomUUID(),
-      name,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    await db.groups.add(newGroup);
-    await addToSyncQueue('CREATE', 'groups', { name }); // Server creates actual membership
-    if (isOnline) syncData();
-  };
-
-  const handleAcceptInvite = async (groupId) => {
-    const res = await fetch(apiUrl(`/api/groups/${groupId}/join`), {
-      method: 'POST',
-      credentials: 'include',
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Failed to accept invite');
-    }
-
-    await syncData();
-  };
-
-  if (loading) return (
-    <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center text-slate-500 font-medium">
-      <div className="mb-4 text-indigo-500 animate-pulse font-bold tracking-widest uppercase text-xs">Synchronizing</div>
-      <p>SplitSync is loading...</p>
-      {showSyncFallback && (
-        <button 
-          onClick={() => window.location.reload()}
-          className="mt-8 text-[10px] uppercase tracking-widest font-bold text-slate-600 hover:text-indigo-400 transition-colors"
-        >
-          Taking too long? Try forcing a refresh
-        </button>
-      )}
-    </div>
-  );
-
-  if (!user) return <GoogleLogin onLogin={handleLogin} />;
+  const createGroup = name => session.saveMutation('CREATE', 'groups', {
+    id: crypto.randomUUID(), name, role: 'ADMIN', joined: true,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  }, user.id);
 
   return (
     <div className="min-h-screen bg-brand-bg font-sans selection:bg-indigo-500/30 selection:text-white">
-      <Navbar 
-        user={user} 
-        onLogout={handleLogout} 
-        isOnline={isOnline} 
-        syncPending={syncPending} 
-      />
-      
+      <Navbar user={user} onLogout={() => session.signOut()} isOnline={isOnline} verified={verified} syncPending={syncPending} />
+      {(notice || migrationNotice) && (
+        <div role="status" className="max-w-4xl mx-auto px-6 pt-4 text-sm text-orange-300">
+          {migrationNotice && <p>{migrationNotice}</p>}
+          {notice && <p>{notice}</p>}
+        </div>
+      )}
       <main className="container mx-auto">
         <AnimatePresence mode="wait">
           {currentGroupId ? (
-            <motion.div
-              key="detail"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-            >
-              <GroupDetail 
-                groupId={currentGroupId} 
-                onBack={() => setCurrentGroupId(null)} 
-                user={user}
-              />
+            <motion.div key={currentGroupId} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+              <GroupDetail groupId={currentGroupId} onBack={() => setCurrentGroupId(null)} user={user} db={db} session={session} />
             </motion.div>
           ) : (
-            <motion.div
-              key="list"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-            >
-              <GroupList 
-                groups={groups} 
-                onCreateGroup={handleCreateGroup}
-                onSelectGroup={setCurrentGroupId}
-                onAcceptInvite={handleAcceptInvite}
-              />
+            <motion.div key="list" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}>
+              <GroupList groups={groups} onCreateGroup={createGroup} onSelectGroup={setCurrentGroupId}
+                onAcceptInvite={groupId => session.joinGroup(groupId, user.id)} />
             </motion.div>
           )}
         </AnimatePresence>
       </main>
-
-      {/* Bottom Floating Info for Offline */}
       {!isOnline && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100]">
-          <motion.div 
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            className="px-6 py-2.5 bg-orange-600 text-white rounded-full text-xs font-bold shadow-2xl flex items-center gap-3 border border-orange-500/50 backdrop-blur-md"
-          >
-            <div className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
-            </div>
-            <span>Offline Mode • Changes will sync automatically</span>
+          <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+            className="px-6 py-2.5 bg-orange-600 text-white rounded-full text-xs font-bold shadow-2xl flex items-center gap-3 border border-orange-500/50 backdrop-blur-md">
+            <WifiOff className="w-4 h-4" />
+            <span>Offline • Changes sync after your account is verified online</span>
           </motion.div>
         </div>
       )}
     </div>
   );
+}
+
+export default function App() {
+  const [session] = useState(() => new AccountSession({ apiUrl }));
+  const account = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const [showSyncFallback, setShowSyncFallback] = useState(false);
+
+  useEffect(() => {
+    void session.start();
+    return () => session.dispose();
+  }, [session]);
+
+  useEffect(() => {
+    if (!account.loading) { setShowSyncFallback(false); return; }
+    const timer = setTimeout(() => setShowSyncFallback(true), 6000);
+    return () => clearTimeout(timer);
+  }, [account.loading]);
+
+  if (account.loading) return (
+    <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center text-slate-500 font-medium">
+      <div className="mb-4 text-indigo-500 animate-pulse font-bold tracking-widest uppercase text-xs">Verifying account</div>
+      <p>SplitSync is loading...</p>
+      {showSyncFallback && (
+        <button onClick={() => window.location.reload()} className="mt-8 text-[10px] uppercase tracking-widest font-bold text-slate-600 hover:text-indigo-400 transition-colors">
+          Taking too long? Try refreshing
+        </button>
+      )}
+    </div>
+  );
+
+  if (!account.user || !account.database || account.database.accountId !== account.user.id) {
+    return <GoogleLogin onLogin={token => session.signIn(token)} notice={account.notice} migrationNotice={account.migrationNotice} />;
+  }
+
+  return <AccountWorkspace key={account.accountGeneration} session={session} account={account} />;
 }
