@@ -110,7 +110,8 @@ Uses the app while traveling or in low-connectivity environments and expects the
 | AUTH-002 | The backend must verify Google ID tokens with the configured Google OAuth client ID. | Must |
 | AUTH-003 | The backend must create a user record when a valid Google user signs in for the first time. | Must |
 | AUTH-004 | The backend must set an HTTP-only session cookie after successful login. | Must |
-| AUTH-005 | The app must expose a logout action that clears the server cookie and local cached data. | Must |
+| AUTH-005 | Logout must revoke the server session, clear local cached data and queued changes, and stay locally locked if revocation cannot be confirmed. | Must |
+| AUTH-006 | Login, logout, and identity changes must invalidate stale requests and coordinate between tabs. | Must |
 
 ### 7.2 Groups and Membership
 
@@ -119,10 +120,10 @@ Uses the app while traveling or in low-connectivity environments and expects the
 | GRP-001 | Users must be able to create a named group. | Must |
 | GRP-002 | Group creators must be added as joined admin members. | Must |
 | GRP-003 | Users must be able to view groups where they have membership. | Must |
-| GRP-004 | Members must be able to invite existing users by email. | Must |
+| GRP-004 | Accepted administrators must be able to invite existing users by email. | Must |
 | GRP-005 | Invited members must be stored with a pending joined state. | Must |
 | GRP-006 | Pending members must be able to accept an invite. | Must |
-| GRP-007 | Group detail views must include members, expenses, and payments. | Must |
+| GRP-007 | Accepted members may view members, expenses, and payments; pending members receive invitation metadata only. | Must |
 
 ### 7.3 Expenses
 
@@ -135,7 +136,7 @@ Uses the app while traveling or in low-connectivity environments and expects the
 | EXP-005 | Users must be able to split expenses by custom amounts. | Must |
 | EXP-006 | Custom split totals must match the total expense amount before submission. | Must |
 | EXP-007 | Users must be able to view, edit, and delete existing expenses. | Must |
-| EXP-008 | Expense access must be restricted to members of the relevant group. | Must |
+| EXP-008 | Expense access and payer/split participation must require accepted membership of the relevant group. | Must |
 
 ### 7.4 Balances and Settlements
 
@@ -145,7 +146,7 @@ Uses the app while traveling or in low-connectivity environments and expects the
 | BAL-002 | The app must show whether the current user owes money or can recover money. | Must |
 | BAL-003 | The app should suggest a settlement target based on balances. | Should |
 | PAY-001 | Users must be able to record settlement payments between two different group members. | Must |
-| PAY-002 | Payment users must belong to the same group. | Must |
+| PAY-002 | Payment users and callers must have accepted membership in the same group. | Must |
 | PAY-003 | Settlement records must appear in group history. | Must |
 
 ### 7.5 Offline-First Behavior
@@ -158,6 +159,8 @@ Uses the app while traveling or in low-connectivity environments and expects the
 | OFF-004 | Local mutations must be added to a sync queue when immediate server sync is not possible. | Must |
 | OFF-005 | The app must process queued changes when the device returns online. | Must |
 | OFF-006 | The app must display the number of pending sync items. | Should |
+| OFF-007 | Cached data and queue entries must belong to one account; queue processing requires server-verified identity matching the entry owner. | Must |
+| OFF-008 | Offline restoration expires five days after the last server verification and cannot bypass a local logout lock. | Must |
 
 ### 7.6 Progressive Web App
 
@@ -271,6 +274,7 @@ Uses the app while traveling or in low-connectivity environments and expects the
 ### Sync Queue
 
 - `id`
+- `ownerId`
 - `action`
 - `table`
 - `data`
@@ -284,6 +288,7 @@ Uses the app while traveling or in low-connectivity environments and expects the
 - `POST /api/auth/google`
 - `GET /api/me`
 - `POST /api/auth/logout`
+- `POST /api/auth/logout-all`
 
 ### Groups
 
@@ -309,7 +314,7 @@ Uses the app while traveling or in low-connectivity environments and expects the
 
 ### Security
 
-- Sessions must use HTTP-only cookies.
+- Sessions must use random IDs in HTTP-only cookies with revocable server records, a 30-day absolute expiry, and a seven-day idle expiry.
 - Backend routes that expose user data must require authentication.
 - Expense and payment operations must validate group membership.
 - Production deployments should use secure cookies over HTTPS.
@@ -368,7 +373,7 @@ The MVP includes:
 - Email invites for users who have never signed in.
 - Advanced conflict resolution for simultaneous offline edits.
 - Export to CSV/PDF.
-- Admin-only role enforcement beyond basic membership.
+- Further administrator controls beyond invitation authorization.
 
 ## 14. Success Metrics
 
