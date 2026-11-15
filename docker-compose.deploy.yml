@@ -1,0 +1,26 @@
+services:
+  backend:
+    image: docker.io/${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE}/splitsync-backend:${IMAGE_TAG:-latest}
+    container_name: splitsync-backend
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-splitSyncSession}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Set the public frontend origin}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-lax}
+    ports:
+      - "${BACKEND_PORT:-3003}:3000"
+    restart: unless-stopped
+
+  frontend:
+    image: docker.io/${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE}/splitsync-frontend:${IMAGE_TAG:-latest}
+    container_name: splitsync-frontend
+    ports:
+      - "${FRONTEND_PORT:-5003}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

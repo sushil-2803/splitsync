@@ -12,9 +12,19 @@
     "backend:start": "npm --prefix Backend run start",
     "frontend:dev": "npm --prefix Frontend run dev",
     "frontend:build": "npm --prefix Frontend run build",
-    "frontend:preview": "npm --prefix Frontend run preview"
+    "frontend:preview": "npm --prefix Frontend run preview",
+    "test:security": "node --test --test-concurrency=1 tests/backend-security.test.mjs tests/frontend-security.test.mjs",
+    "test:browser": "node --test --test-concurrency=1 tests/browser-security.test.mjs"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "playwright": "^1.65.1"
+  },
+  "overrides": {
+    "workbox-build": {
+      "glob": "^14.0.6"
+    }
+  },
   "description": "Independent backend and frontend workspaces for SplitSync.",
   "main": "index.js",
   "keywords": [],
