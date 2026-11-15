@@ -1,22 +1,22 @@
 services:
-# Uncomment the postgres service if you want to run a local PostgreSQL instance using Docker. Make sure to update the DATABASE_URL in the backend service accordingly.
-  # postgres:
-  #   image: postgres:16-alpine
-  #   container_name: splitsync-postgres
-  #   environment:
-  #     POSTGRES_DB: ${POSTGRES_DB:-splitsync}
-  #     POSTGRES_USER: ${POSTGRES_USER:-postgres}
-  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-  #   ports:
-  #     - "5435:5432"
-  #   volumes:
-  #     - postgres-data:/var/lib/postgresql/data
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  #   restart: unless-stopped
+# Set POSTGRES_URL=postgres and POSTGRES_PORT=5432 to use this local database.
+  postgres:
+    image: postgres:16-alpine
+    container_name: splitsync-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-splitsync}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   backend:
     build:
@@ -24,13 +24,16 @@ services:
       dockerfile: Backend/Dockerfile
     container_name: splitsync-backend
     environment:
-      NODE_ENV: production
+      NODE_ENV: development
       PORT: 3000
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_URL:-localhost}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-splitsync}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5000}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_COOKIE_NAME: ${LOCAL_SESSION_COOKIE_NAME:-splitSyncDockerSession}
+      FRONTEND_ORIGIN: ${LOCAL_FRONTEND_ORIGIN:-http://localhost:5003}
+      COOKIE_SECURE: ${LOCAL_COOKIE_SECURE:-false}
+      COOKIE_SAME_SITE: ${LOCAL_COOKIE_SAME_SITE:-lax}
     ports:
       - "3003:3000"
     # depends_on:
@@ -44,7 +47,7 @@ services:
       dockerfile: Frontend/Dockerfile
       args:
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID}
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:3003}
+        VITE_API_URL: ${LOCAL_VITE_API_URL:-}
     container_name: splitsync-frontend
     ports:
       - "5003:80"
