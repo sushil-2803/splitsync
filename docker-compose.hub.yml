@@ -1,0 +1,21 @@
+services:
+  backend:
+    image: docker.io/${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE}/splitsync-backend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Backend/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+
+  frontend:
+    image: docker.io/${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE}/splitsync-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Frontend/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:?Set VITE_GOOGLE_CLIENT_ID}
+        VITE_API_URL: ${VITE_API_URL:-}
