@@ -34,6 +34,7 @@ services:
       FRONTEND_ORIGIN: ${LOCAL_FRONTEND_ORIGIN:-http://localhost:5003}
       COOKIE_SECURE: ${LOCAL_COOKIE_SECURE:-false}
       COOKIE_SAME_SITE: ${LOCAL_COOKIE_SAME_SITE:-lax}
+      SESSION_SECRET: ${SESSION_SECRET}
     ports:
       - "3003:3000"
     # depends_on:
